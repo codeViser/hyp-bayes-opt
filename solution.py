@@ -1,5 +1,9 @@
 import numpy as np
 from scipy.optimize import fmin_l_bfgs_b
+from sklearn.gaussian_process import GaussianProcessRegressor, kernels
+from scipy.stats import norm
+from sklearn.utils._testing import ignore_warnings
+from sklearn.exceptions import ConvergenceWarning
 
 domain = np.array([[0, 5]])
 SAFETY_THRESHOLD = 1.2
@@ -13,7 +17,22 @@ class BO_algo():
         """Initializes the algorithm with a parameter configuration. """
 
         # TODO: enter your code here
-        pass
+        # keep track of all the x, f(x), v(x) we received from the environment
+        self.x_rec = np.empty((0,domain.shape[0]), float)
+        self.fx_rec = np.empty((0), float)
+        self.vx_rec = np.empty((0), float)
+
+        self.speedr_mean = 1.5
+        self.speedr_coeff = 1
+
+        # belief of the black box function
+        self.gpr_kern = kernels.ConstantKernel(0.5) * kernels.Matern(length_scale=0.5, nu=2.5) + kernels.WhiteKernel(noise_level=0.15)
+        self.gpr = GaussianProcessRegressor(kernel=self.gpr_kern, n_restarts_optimizer=10, normalize_y=True, random_state=SEED)
+
+        # belief for the speed function
+        self.speedr_kern = kernels.ConstantKernel(np.sqrt(2)) * kernels.Matern(length_scale=0.5, nu=2.5) + kernels.WhiteKernel(noise_level=0.0001)
+        self.speedr = GaussianProcessRegressor(kernel=self.speedr_kern, n_restarts_optimizer=10, normalize_y=True, random_state=SEED)
+        # pass
 
 
     def next_recommendation(self):
@@ -28,8 +47,8 @@ class BO_algo():
 
         # TODO: enter your code here
         # In implementing this function, you may use optimize_acquisition_function() defined below.
-        raise NotImplementedError
-
+        return self.optimize_acquisition_function()
+        # raise NotImplementedError
 
     def optimize_acquisition_function(self):
         """
@@ -75,9 +94,30 @@ class BO_algo():
         """
 
         # TODO: enter your code here
-        raise NotImplementedError
+        fx_samples = self.gpr.predict(self.x_rec)
+        fx_opt = np.max(fx_samples)
+        mu1_x, sig1_x = self.gpr.predict(np.atleast_2d(x), return_std=True)
+        gamma1_x = float(fx_opt - mu1_x)/sig1_x
 
+        a1_x = sig1_x * (gamma1_x * norm.cdf(gamma1_x) + norm.pdf(gamma1_x))
 
+        speedx_samples = self.speedr.predict(self.x_rec)
+        speedx_opt = np.max(speedx_samples)
+        speedx_opt += self.speedr_mean
+        mu2_x, sig2_x = self.speedr.predict(np.atleast_2d(x), return_std=True)
+        mu2_x+= self.speedr_mean
+        gamma2_x = float(speedx_opt - mu2_x)/sig2_x
+
+        a2_x = sig2_x * (gamma2_x * norm.cdf(gamma2_x) + norm.pdf(gamma2_x))
+
+        a_x = a1_x*a2_x
+
+        if mu2_x > SAFETY_THRESHOLD:
+            return a_x
+        else:
+            return -1*a_x
+
+    @ignore_warnings(category=ConvergenceWarning)
     def add_data_point(self, x, f, v):
         """
         Add data points to the model.
@@ -93,7 +133,14 @@ class BO_algo():
         """
 
         # TODO: enter your code here
-        raise NotImplementedError
+        self.x_rec = np.append(self.x_rec, np.atleast_2d(x), axis=0)
+        self.fx_rec = np.append(self.fx_rec, np.atleast_1d(f), axis=0)
+        self.vx_rec = np.append(self.vx_rec, np.atleast_1d(v-self.speedr_mean), axis=0)
+        # Would update the posterior of the assumptions here to make even \
+        # better recommendations using acquisition the next time
+        self.gpr.fit(self.x_rec, self.fx_rec)
+        self.speedr.fit(self.x_rec, self.vx_rec)
+        # raise NotImplementedError
 
     def get_solution(self):
         """
@@ -106,7 +153,11 @@ class BO_algo():
         """
 
         # TODO: enter your code here
-        raise NotImplementedError
+        fx_filtered = self.fx_rec[self.vx_rec + self.speedr_mean > SAFETY_THRESHOLD]
+        x_filtered = self.x_rec[self.vx_rec + self.speedr_mean > SAFETY_THRESHOLD]
+        ind = np.argmax(fx_filtered)
+        return x_filtered[ind]
+        # raise NotImplementedError
 
 
 """ Toy problem to check code works as expected """
